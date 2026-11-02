@@ -2332,10 +2332,8 @@ func (s *wikiIngestService) reduceSlugUpdates(
 				// silently completing them with the page update missing.
 				return changed, affectedType, additionFailed, updateDeferred, err
 			}
-			// Don't propagate the LLM error to the named return: it has
-			// already been logged, and the eg.Go caller would otherwise
-			// log it a second time as "reduce failed for slug".
-			err = nil
+			// Preserve the error so the owning documents are retried rather than
+			// marked complete while their page contribution is missing.
 		}
 	}
 
@@ -2385,7 +2383,7 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		return true, affectedType, additionFailed, updateDeferred, err
 	}
 
-	return false, "", additionFailed, false, nil
+	return false, "", additionFailed, false, err
 }
 
 // classifyWikiPageWrite turns the result of one guarded UpdatePage call into

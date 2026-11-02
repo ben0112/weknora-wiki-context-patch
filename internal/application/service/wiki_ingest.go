@@ -2988,7 +2988,16 @@ func (s *wikiIngestService) generateWithTemplateResult(
 				break
 			}
 
-			rewrite.WriteString(response.Content)
+			fragment := response.Content
+			if canContinue && round > 0 {
+				fragment = trimWikiContinuationOverlap(rewrite.String(), fragment)
+			}
+			rewrite.WriteString(fragment)
+			if canContinue {
+				if err := validateWikiRewrite(rewrite.String(), maskedData); err != nil {
+					return wikiTemplateResult{}, err
+				}
+			}
 
 			if !canContinue || !isLengthStopFinishReason(finishReason) || round >= wikiPageModifyMaxContinuations {
 				break
