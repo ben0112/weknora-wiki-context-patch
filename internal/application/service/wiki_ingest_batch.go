@@ -722,6 +722,20 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 		}
 		reduceMu.Unlock()
 	}
+	// overflowKIDs records knowledge_ids whose reduce prompt exceeded the
+	// model context window (ErrWikiContextOverflow). These are deterministic
+	// failures: the op is dead-lettered instead of going through the retry
+	// budget, so we keep them out of unappliedSlugKIDs.
+	overflowKIDs := make(map[string]struct{})
+	collectOverflow := func(updates []SlugUpdate) {
+		reduceMu.Lock()
+		for _, u := range updates {
+			if u.KnowledgeID != "" {
+				overflowKIDs[u.KnowledgeID] = struct{}{}
+			}
+		}
+		reduceMu.Unlock()
+	}
 
 	// Build the kid → wikiSpan lookup before kicking off reduce. Each
 	// per-slug reduce attaches a postprocess.wiki.page[slug] subspan
@@ -761,7 +775,15 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 				return reduceErr
 			})
 			if lockErr != nil {
-				collectUnapplied(updates)
+				// withSlugLock surfaces the fn's returned error here (the
+				// reduce error travels as lockErr, not reduceErr). A
+				// context-window overflow is deterministic: dead-letter the
+				// contributing ops instead of burning the retry budget.
+				if errors.Is(lockErr, ErrWikiContextOverflow) {
+					collectOverflow(updates)
+				} else {
+					collectUnapplied(updates)
+				}
 				// ctx cancelled (batch timeout / shutdown) — stop quietly.
 				return nil
 			}
@@ -789,15 +811,19 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 			}
 			if reduceErr != nil {
 				// The page's read-modify-write failed, so this slug's update
-				// never landed. Re-queue the contributing documents (same
-				// fail_count budget as a map failure) so a later batch retries
-				// instead of silently dropping the row at trim time.
+				// never landed. A context-window overflow is deterministic and
+				// must NOT be retried: route those ops to the dead-letter path
+				// instead of the fail_count budget.
 				logger.Warnf(reduceCtx, "wiki ingest: reduce failed for slug %s: %v", slug, reduceErr)
-				collectUnapplied(updates)
-				if isLikelyRateLimitError(reduceErr) {
-					reduceMu.Lock()
-					rateLimited = true
-					reduceMu.Unlock()
+				if errors.Is(reduceErr, ErrWikiContextOverflow) {
+					collectOverflow(updates)
+				} else {
+					collectUnapplied(updates)
+					if isLikelyRateLimitError(reduceErr) {
+						reduceMu.Lock()
+						rateLimited = true
+						reduceMu.Unlock()
+					}
 				}
 			}
 			if changed {
@@ -987,13 +1013,30 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 		}
 	}
 
+	// Context-overflow ops are terminal: collect them now so they are kept
+	// out of the trim set (like failed ops) and then dead-lettered directly
+	// instead of entering the retry budget.
+	overflowOps := make([]WikiPendingOp, 0)
+	if len(overflowKIDs) > 0 {
+		for _, op := range pendingOps {
+			if _, overflow := overflowKIDs[op.KnowledgeID]; overflow {
+				overflowOps = append(overflowOps, op)
+			}
+		}
+	}
+
 	// Build the trim set: rows that should be removed from
 	// task_pending_ops. We start from the full peekedIDs (every row we
 	// pulled, even ones de-duplicated by knowledge_id) and subtract
 	// any failed op's dbID — those need to stay in place so the
 	// requeueFailedOps path can decide between retry and dead-letter.
-	failedIDSet := make(map[int64]struct{}, len(failedOps))
+	failedIDSet := make(map[int64]struct{}, len(failedOps)+len(overflowOps))
 	for _, op := range failedOps {
+		if op.dbID != 0 {
+			failedIDSet[op.dbID] = struct{}{}
+		}
+	}
+	for _, op := range overflowOps {
 		if op.dbID != 0 {
 			failedIDSet[op.dbID] = struct{}{}
 		}
@@ -1016,8 +1059,12 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 	if len(failedOps) > 0 {
 		requeueErr = s.requeueFailedOps(settleCtx, payload, failedOps)
 	}
+	var overflowErr error
+	if len(overflowOps) > 0 {
+		overflowErr = s.deadLetterContextOverflowOps(settleCtx, payload, overflowOps)
+	}
 	settleCancel()
-	if err := errors.Join(trimErr, requeueErr); err != nil {
+	if err := errors.Join(trimErr, requeueErr, overflowErr); err != nil {
 		exitStatus = "settle_failed"
 		return fmt.Errorf("wiki ingest: settle claimed rows: %w", err)
 	}
@@ -2278,6 +2325,12 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			// the existing page unchanged), so don't flag those.
 			if len(additions) > 0 {
 				additionFailed = true
+			}
+			if errors.Is(err, ErrWikiContextOverflow) {
+				// A context-window overflow is deterministic: propagate it so
+				// the batch dead-letters the contributing ops instead of
+				// silently completing them with the page update missing.
+				return changed, affectedType, additionFailed, updateDeferred, err
 			}
 			// Don't propagate the LLM error to the named return: it has
 			// already been logged, and the eg.Go caller would otherwise
