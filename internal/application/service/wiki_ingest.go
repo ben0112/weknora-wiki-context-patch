@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -36,6 +38,94 @@ import (
 // one releases. Standard (Redis) mode no longer takes an exclusive per-KB
 // lock (Phase 3) and never returns this.
 var ErrWikiIngestConcurrent = errors.New("concurrent wiki task active")
+
+// ErrWikiContextOverflow is returned by generateWithTemplateResult when the
+// assembled prompt plus a minimum output budget does not fit into the model
+// context window. It is a terminal, non-retryable error: re-sending the same
+// oversized prompt cannot succeed, so the batch marks the contributing ops as
+// dead letters instead of burning retries (see deadLetterContextOverflowOps).
+var ErrWikiContextOverflow = errors.New("wiki context overflow")
+
+const (
+	// wikiContextWindowDefault is the fallback model context window (tokens)
+	// used by wiki prompt budgeting when no explicit override is configured.
+	// Overridable via WEKNORA_WIKI_CONTEXT_WINDOW for models served with a
+	// smaller window.
+	wikiContextWindowDefault = 262144
+
+	// wikiContextSafetyMargin is subtracted from the context window on top of
+	// the estimated input tokens. It absorbs tokenizer drift, chat-template
+	// and JSON-wrapper overhead so the provider-side admission check
+	// (input_tokens + max_tokens <= context_window) still holds.
+	wikiContextSafetyMargin = 2048
+
+	// wikiMinOutputTokens is the smallest completion budget a wiki LLM call
+	// may run with. Below this floor the prompt is considered too large and
+	// the call fails with ErrWikiContextOverflow instead of being sent.
+	wikiMinOutputTokens = 512
+)
+
+// wikiContextWindowTokens returns the effective model context window for
+// wiki prompt budgeting. The env override exists for testing and for models
+// whose served window is smaller than the default.
+func wikiContextWindowTokens() int {
+	if v := strings.TrimSpace(os.Getenv("WEKNORA_WIKI_CONTEXT_WINDOW")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return wikiContextWindowDefault
+}
+
+// wikiEstimateMessageTokens returns a conservative token estimate for the
+// messages that are about to be sent to the LLM. ASCII runs are counted at
+// ~4 characters per token; every non-ASCII rune (CJK, full-width punctuation,
+// symbols) counts as one token. For Qwen-family tokenizers this overestimates
+// Chinese text (real cost ~0.6 token/char), which is the safe direction for a
+// budget: a smaller output budget is always preferable to a provider 400.
+func wikiEstimateMessageTokens(messages []chat.Message) int {
+	total := 3 // per-conversation tail
+	for i := range messages {
+		total += 3 // per-message overhead
+		for _, content := range []string{messages[i].Content, messages[i].ReasoningContent} {
+			pos := 0
+			for pos < len(content) {
+				r, size := utf8.DecodeRuneInString(content[pos:])
+				if r < utf8.RuneSelf {
+					end := pos + size
+					for end < len(content) {
+						r2, sz2 := utf8.DecodeRuneInString(content[end:])
+						if r2 >= utf8.RuneSelf {
+							break
+						}
+						end += sz2
+					}
+					total += (end - pos + 3) / 4
+					pos = end
+					continue
+				}
+				total++
+				pos += size
+			}
+		}
+	}
+	return total
+}
+
+// wikiOutputBudget computes the completion budget that fits the remaining
+// context after the estimated prompt. It returns ErrWikiContextOverflow when
+// even the minimum output budget cannot be reserved.
+func wikiOutputBudget(window, inputTokens int) (int, error) {
+	room := window - inputTokens - wikiContextSafetyMargin
+	if room < wikiMinOutputTokens {
+		return 0, fmt.Errorf("%w: estimated prompt=%d tokens, context window=%d, output room=%d",
+			ErrWikiContextOverflow, inputTokens, window, room)
+	}
+	if room < wikiLLMMaxTokens {
+		return room, nil
+	}
+	return wikiLLMMaxTokens, nil
+}
 
 const (
 	// maxContentForWiki limits the document content sent to LLM for wiki generation
@@ -1391,6 +1481,49 @@ func (s *wikiIngestService) requeueFailedOps(ctx context.Context, payload WikiIn
 	return errors.Join(settleErrs...)
 }
 
+// deadLetterContextOverflowOps permanently archives ops whose reduce prompt
+// exceeded the model context window. These failures are deterministic — the
+// same prompt fails again on every retry — so the ops are moved straight to
+// task_dead_letters (with an explicit reason) and deleted from the pending
+// queue instead of spending the wikiMaxFailRetries budget on doomed retries.
+func (s *wikiIngestService) deadLetterContextOverflowOps(ctx context.Context, payload WikiIngestPayload, ops []WikiPendingOp) error {
+	if s.pendingRepo == nil || len(ops) == 0 {
+		return nil
+	}
+	var settleErrs []error
+	for _, op := range ops {
+		if op.dbID == 0 {
+			continue
+		}
+		if op.Op == WikiOpIngest {
+			s.finalizeWikiSubtask(ctx, op.KnowledgeID, op.Attempt)
+		}
+		logger.Warnf(ctx, "wiki ingest: dead-lettering op %s (%s): wiki reduce prompt exceeds model context window",
+			op.KnowledgeID, op.DocTitle)
+		if s.deadLetterRepo != nil {
+			payloadBytes, _ := json.Marshal(op)
+			if dlErr := s.deadLetterRepo.Insert(ctx, &types.TaskDeadLetter{
+				TenantID:  payload.TenantID,
+				TaskType:  wikiTaskType,
+				Scope:     wikiTaskScope,
+				ScopeID:   payload.KnowledgeBaseID,
+				RelatedID: op.KnowledgeID,
+				Payload:   payloadBytes,
+				LastError: "context_length_exceeded: wiki reduce prompt exceeds model context window (no retry)",
+				FailCount: 1,
+			}); dlErr != nil {
+				logger.Warnf(ctx, "wiki ingest: failed to archive context-overflow op %s to dead letters: %v", op.KnowledgeID, dlErr)
+				settleErrs = append(settleErrs, fmt.Errorf("archive context-overflow dead letter id=%d: %w", op.dbID, dlErr))
+			}
+		}
+		if err := s.pendingRepo.DeleteByIDs(ctx, []int64{op.dbID}); err != nil {
+			logger.Warnf(ctx, "wiki ingest: failed to drop context-overflow row id=%d: %v", op.dbID, err)
+			settleErrs = append(settleErrs, fmt.Errorf("drop context-overflow row id=%d: %w", op.dbID, err))
+		}
+	}
+	return errors.Join(settleErrs...)
+}
+
 // docIngestResult captures per-document info for batch post-processing.
 type wikiIngestPageRef struct {
 	Slug  string
@@ -2741,7 +2874,23 @@ func (s *wikiIngestService) generateWithTemplateResult(
 		)
 	}
 	thinking := false
-	opts := &chat.ChatOptions{Temperature: 0.3, Thinking: &thinking, MaxTokens: wikiLLMMaxTokens}
+	// Budget the completion against the model context window so a large
+	// reduce prompt (hub pages, long pages) never produces the provider-side
+	// "Requested token count exceeds ... context length" 400. The output
+	// budget is clamped to the room left after the estimated prompt; when not
+	// even wikiMinOutputTokens fits, the call fails fast with the terminal
+	// ErrWikiContextOverflow instead of being sent (and retried) uselessly.
+	windowTokens := wikiContextWindowTokens()
+	inputTokens := wikiEstimateMessageTokens(messages)
+	maxOut, budgetErr := wikiOutputBudget(windowTokens, inputTokens)
+	if budgetErr != nil {
+		return wikiTemplateResult{}, budgetErr
+	}
+	if maxOut < wikiLLMMaxTokens {
+		logger.Debugf(ctx, "wiki ingest: clamped output budget template=%s estimated_input=%d window=%d max_out=%d",
+			promptTpl, inputTokens, windowTokens, maxOut)
+	}
+	opts := &chat.ChatOptions{Temperature: 0.3, Thinking: &thinking, MaxTokens: maxOut}
 	prefixFingerprint := chat.PromptPrefixFingerprint(messages, opts)
 	warmupKey := ""
 	if promptTpl == agent.WikiPageModifyUserPrompt {
