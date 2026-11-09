@@ -2039,6 +2039,21 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			}
 		}
 		if !hasAdditions {
+			// Retract-only update on a page that no longer exists (the page
+			// was deleted together with its sources): mark the deleted
+			// sources' ledger contributions retracted so they don't linger
+			// as active rows pointing at a dead page.
+			if s.contribRepo != nil {
+				kids := make([]string, 0, len(updates))
+				for _, u := range updates {
+					if (u.Type == "retract" || u.Type == "retractStale") && u.KnowledgeID != "" {
+						kids = append(kids, u.KnowledgeID)
+					}
+				}
+				if len(kids) > 0 {
+					s.retractContributions(ctx, kbID, slug, kids)
+				}
+			}
 			return false, "", false, false, nil
 		}
 
