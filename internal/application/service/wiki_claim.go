@@ -64,8 +64,10 @@ func wikiClaimSimilarity(a, b string) float64 {
 
 // wikiClaimMergeSimilarity is the threshold at which two differently-worded
 // claims are treated as the same fact and merged into one claim with an extra
-// citation.
-const wikiClaimMergeSimilarity = 0.82
+// citation. 0.78 over 2-rune shingles catches punctuation/measure-word drift
+// ("给予不超过50%的补贴" vs "给予不超过50%的补贴。") while leaving genuinely
+// different facts (which typically land below 0.6) apart.
+const wikiClaimMergeSimilarity = 0.78
 
 // wikiClaimCandidate is one extracted claim plus the section heading it was
 // found under.
