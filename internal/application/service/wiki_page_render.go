@@ -24,10 +24,6 @@ type claimProjectionInput struct {
 // during the lazy backfill migration.
 const wikiLegacyKnowledgeID = "legacy"
 
-// legacyTenantID guards the backfill tenant: 0 means unknown and is stored
-// as-is for un-scoped deployments.
-func (s *wikiIngestService) legacyTenantID(t uint64) uint64 { return t }
-
 // renderWikiPageFromClaimsScoped is the scoped entry point: claims are
 // fetched for (kbID, slug), grouped by section heading, and each affected
 // section is re-rendered from its claims.
@@ -53,42 +49,6 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 		// A single-block page has no stable section anchors; leave it to the
 		// full-modify path instead of risking a wholesale rewrite.
 		return "", fmt.Errorf("%w: projection needs >=2 headings, page has %d", ErrWikiContextOverflow, len(sections))
-	}
-
-	// Legacy migration (slice 3b): a page built before the claim ledger has no
-	// claims yet. Adopt it by turning each of its sections into one coarse
-	// claim, so the next update renders from the ledger instead of the whole
-	// page. Idempotent: only runs when BOTH lists are empty.
-	if len(active) == 0 && len(conflictRows) == 0 {
-		legacy := make([]*types.WikiPageClaim, 0, len(sections))
-		for _, sec := range sections {
-			body := strings.TrimSpace(sec.body)
-			if body == "" {
-				continue
-			}
-			legacy = append(legacy, &types.WikiPageClaim{
-				TenantID:        s.legacyTenantID(in.tenantID),
-				KnowledgeBaseID: in.kbID,
-				Slug:            in.slug,
-				KnowledgeID:     wikiLegacyKnowledgeID,
-				SectionKey:      strings.TrimSpace(sec.heading),
-				ClaimKey:        normalizeWikiClaimKey(body),
-				ClaimText:       body,
-				Citations:       types.JSON([]byte("[]")),
-				Status:          types.WikiClaimActive,
-			})
-		}
-		if len(legacy) > 0 {
-			if err := s.claimRepo.InsertClaims(ctx, legacy); err != nil {
-				logger.Warnf(ctx, "wiki ingest: legacy claim backfill for slug %s failed: %v", in.slug, err)
-			} else {
-				active = legacy
-				logger.Infof(ctx, "wiki ingest: legacy claim backfill adopted %d sections for slug %s", len(legacy), in.slug)
-			}
-		}
-	}
-	if len(active) == 0 && len(conflictRows) == 0 {
-		return "", fmt.Errorf("%w: no claims for projection", ErrWikiContextOverflow)
 	}
 
 	// Group claims by the page heading they belong to.
@@ -118,7 +78,30 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 		h := strings.TrimSpace(sec.heading)
 		secClaims := byHeading[h]
 		if len(secClaims) == 0 && len(conflictByHeading[h]) == 0 {
-			rendered = append(rendered, sec) // unchanged
+			// Legacy migration (slice 3b): this pre-ledger section has no
+			// claims yet. Adopt it as one coarse legacy claim but keep its
+			// current text this round; the next update renders it from the
+			// ledger.
+			body := strings.TrimSpace(sec.body)
+			if body != "" && s.claimRepo != nil {
+				legacy := &types.WikiPageClaim{
+					TenantID:        in.tenantID,
+					KnowledgeBaseID: in.kbID,
+					Slug:            in.slug,
+					KnowledgeID:     wikiLegacyKnowledgeID,
+					SectionKey:      h,
+					ClaimKey:        normalizeWikiClaimKey(body),
+					ClaimText:       body,
+					Citations:       types.JSON([]byte("[]")),
+					Status:          types.WikiClaimActive,
+				}
+				if err := s.claimRepo.InsertClaims(ctx, []*types.WikiPageClaim{legacy}); err != nil {
+					logger.Warnf(ctx, "wiki ingest: legacy section backfill for slug %s heading %q failed: %v", in.slug, h, err)
+				} else {
+					logger.Infof(ctx, "wiki ingest: legacy section backfill adopted heading %q for slug %s", h, in.slug)
+				}
+			}
+			rendered = append(rendered, sec) // unchanged this round
 			continue
 		}
 		var conflictLines strings.Builder
