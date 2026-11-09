@@ -2387,6 +2387,7 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			// page content update.
 			if s.contribRepo != nil {
 				s.persistContributions(ctx, kbID, slug, tenantID, additions, chunkContentByID)
+				s.upsertPageClaims(ctx, chatModel, kbID, slug, tenantID, additions, chunkContentByID)
 				if len(retracts) > 0 && retractKIDs != nil {
 					kids := make([]string, 0, len(retractKIDs))
 					for k := range retractKIDs {

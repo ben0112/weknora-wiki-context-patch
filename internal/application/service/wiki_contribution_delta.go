@@ -138,10 +138,17 @@ func (s *wikiIngestService) persistContributions(
 func (s *wikiIngestService) retractContributions(
 	ctx context.Context, kbID, slug string, knowledgeIDs []string,
 ) {
-	if s.contribRepo == nil || len(knowledgeIDs) == 0 {
+	if len(knowledgeIDs) == 0 {
 		return
 	}
-	if err := s.contribRepo.RetractByKnowledge(ctx, kbID, []string{slug}, knowledgeIDs); err != nil {
-		logger.Warnf(ctx, "wiki ingest: failed to retract contributions for slug %s: %v", slug, err)
+	if s.contribRepo != nil {
+		if err := s.contribRepo.RetractByKnowledge(ctx, kbID, []string{slug}, knowledgeIDs); err != nil {
+			logger.Warnf(ctx, "wiki ingest: failed to retract contributions for slug %s: %v", slug, err)
+		}
+	}
+	if s.claimRepo != nil {
+		if err := s.claimRepo.RetractByKnowledge(ctx, kbID, []string{slug}, knowledgeIDs); err != nil {
+			logger.Warnf(ctx, "wiki ingest: failed to retract claims for slug %s: %v", slug, err)
+		}
 	}
 }

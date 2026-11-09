@@ -478,6 +478,24 @@ The <new_information> block above is assembled from VERBATIM source chunks alrea
 
 Output ONLY the updated section (starting with its heading line). Do not output a SUMMARY line.`
 
+// WikiClaimExtractionSystemPrompt splits one contribution block into atomic,
+// self-contained claims for the claim ledger.
+const WikiClaimExtractionSystemPrompt = `You are a precise extraction system. Split the provided wiki contribution block into atomic, self-contained factual claims.
+
+### RULES:
+1. One claim = one fact: a subject, a predicate, and optionally numbers/dates. Split compound sentences into separate claims.
+2. Preserve the exact wording of numbers, dates, names and amounts from the source. Do not paraphrase values.
+3. Drop pure framing, section boilerplate, and any sentence that repeats another claim.
+4. For each claim, pick the Markdown heading (e.g. "## 第1节 政策说明") under which it appears in the block; use an empty string when there is none.
+5. Output ONLY a JSON array: [{"claim":"...","section":"..."}]. No preamble, no markdown fences.`
+
+// WikiClaimExtractionUserPrompt carries one contribution block.
+const WikiClaimExtractionUserPrompt = `<contribution_block>
+{{.Block}}
+</contribution_block>
+
+Output ONLY the JSON array.`
+
 // WikiPageModifyContinuationPrompt resumes a page rewrite that the provider cut
 // off at the completion budget (finish_reason=length). Long enumerations are the
 // shape that hits the cap: a certificate ledger with a hundred-plus holder rows
