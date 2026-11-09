@@ -53,6 +53,16 @@ func (f *fakeClaimRepo) ListActiveByScope(_ context.Context, _, _ string) ([]*ty
 	return f.active, nil
 }
 
+func (f *fakeClaimRepo) ListConflictByScope(_ context.Context, _, _ string) ([]*types.WikiPageClaim, error) {
+	var out []*types.WikiPageClaim
+	for _, c := range f.active {
+		if c.Status == types.WikiClaimConflict {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeClaimRepo) StripKnowledgeCitations(_ context.Context, _, _, _ string) error {
 	return nil
 }

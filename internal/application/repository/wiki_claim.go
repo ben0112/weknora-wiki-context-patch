@@ -31,6 +31,17 @@ func (r *wikiClaimRepository) ListActiveByScope(
 	return rows, err
 }
 
+// ListConflictByScope returns the conflict-marked claims for one page.
+func (r *wikiClaimRepository) ListConflictByScope(
+	ctx context.Context, kbID, slug string,
+) ([]*types.WikiPageClaim, error) {
+	var rows []*types.WikiPageClaim
+	err := r.db.WithContext(ctx).
+		Where("knowledge_base_id = ? AND slug = ? AND status = ?", kbID, slug, types.WikiClaimConflict).
+		Find(&rows).Error
+	return rows, err
+}
+
 // StripKnowledgeCitations removes one knowledge's citations from the active
 // claims of a page. Claims left with no citations are superseded; shared
 // claims stay active with the remaining citations.

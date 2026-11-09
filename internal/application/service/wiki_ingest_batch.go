@@ -2332,24 +2332,59 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		pageAliases := strings.Join(page.Aliases, ", ")
 
 		var updatedContent string
-		updatedContent, err = s.generateWithTemplate(ctx, chatModel, agent.WikiPageModifyUserPrompt, map[string]string{
-			"HasAdditions":            hasAdditionsStr,
-			"HasRetractions":          hasRetractionsStr,
-			"PageSlug":                slug,
-			"PageTitle":               pageTitle,
-			"PageType":                pageType,
-			"PageAliases":             pageAliases,
-			"ExistingContent":         existingContent,
-			"SharedSourceContexts":    sharedSourceContexts.String(),
-			"NewContent":              newContentBuilder.String(),
-			"DeletedContent":          deletedContent.String(),
-			"RemainingSourcesContent": remainingSourcesContent.String(),
-			"AvailableSlugs":          relatedSlugs.String(),
-			"Language":                language,
-			"CustomInstructions":      batchCtx.ContentInstructions,
-			"InstructionScope":        "wiki_content",
-		})
-		if err != nil && errors.Is(err, ErrWikiContextOverflow) {
+		var claimsPersisted bool
+		if wikiClaimsEnabled() && exists && s.claimRepo != nil {
+			// Stage-3 projection: persist the ledger + claims, then re-render
+			// the affected sections from the claim ledger instead of one
+			// whole-page rewrite. Falls back to the full modify when the
+			// projection cannot run (no headings, no claims, render error).
+			s.persistContributions(ctx, kbID, slug, tenantID, additions, chunkContentByID)
+			s.upsertPageClaims(ctx, chatModel, kbID, slug, tenantID, additions, chunkContentByID)
+			if len(retracts) > 0 && retractKIDs != nil {
+				kids := make([]string, 0, len(retractKIDs))
+				for k := range retractKIDs {
+					kids = append(kids, k)
+				}
+				s.retractContributions(ctx, kbID, slug, kids)
+			}
+			rendered, rerr := s.renderWikiPageFromClaimsScoped(ctx, chatModel, claimProjectionInput{
+				kbID:           kbID,
+				slug:           slug,
+				pageTitle:      pageTitle,
+				pageType:       pageType,
+				language:       language,
+				existingBody:   page.Content,
+				availableSlugs: relatedSlugs.String(),
+			})
+			if rerr != nil {
+				logger.Warnf(ctx, "wiki ingest: claim projection for slug %s failed (%v); falling back to full modify", slug, rerr)
+			} else {
+				updatedContent = rendered
+				claimsPersisted = true
+				err = nil
+				logger.Infof(ctx, "wiki ingest: claim projection rendered slug %s", slug)
+			}
+		}
+		if !claimsPersisted {
+			updatedContent, err = s.generateWithTemplate(ctx, chatModel, agent.WikiPageModifyUserPrompt, map[string]string{
+				"HasAdditions":            hasAdditionsStr,
+				"HasRetractions":          hasRetractionsStr,
+				"PageSlug":                slug,
+				"PageTitle":               pageTitle,
+				"PageType":                pageType,
+				"PageAliases":             pageAliases,
+				"ExistingContent":         existingContent,
+				"SharedSourceContexts":    sharedSourceContexts.String(),
+				"NewContent":              newContentBuilder.String(),
+				"DeletedContent":          deletedContent.String(),
+				"RemainingSourcesContent": remainingSourcesContent.String(),
+				"AvailableSlugs":          relatedSlugs.String(),
+				"Language":                language,
+				"CustomInstructions":      batchCtx.ContentInstructions,
+				"InstructionScope":        "wiki_content",
+			})
+		}
+		if !claimsPersisted && err != nil && errors.Is(err, ErrWikiContextOverflow) {
 			// The whole-page prompt does not fit the model context window.
 			// Fall back to a section-by-section rewrite that never drops
 			// existing content; it returns the same terminal error when the
@@ -2369,25 +2404,34 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		}
 
 		if err == nil && updatedContent != "" {
-			// Translate request-local handles (ref-N) the model copied from the
-			// encoded context back to their real slugs BEFORE the content is
-			// parsed/stored, so out_links reflect real pages again.
-			updatedContent = slugHandles.decodeContent(updatedContent)
-			updatedSummary, updatedBody := splitSummaryLine(updatedContent)
-			if updatedBody != "" {
-				page.Content = updatedBody
-			} else {
+			if claimsPersisted {
+				// Projection output is a body without a SUMMARY line: store it
+				// verbatim and keep the page's existing summary.
 				page.Content = updatedContent
-			}
-			if updatedSummary != "" {
-				page.Summary = updatedSummary
+			} else {
+				// Translate request-local handles (ref-N) the model copied from
+				// the encoded context back to their real slugs BEFORE the
+				// content is parsed/stored, so out_links reflect real pages.
+				updatedContent = slugHandles.decodeContent(updatedContent)
+				updatedSummary, updatedBody := splitSummaryLine(updatedContent)
+				if updatedBody != "" {
+					page.Content = updatedBody
+				} else {
+					page.Content = updatedContent
+				}
+				if updatedSummary != "" {
+					page.Summary = updatedSummary
+				}
 			}
 			// Stage-3 ledger: record the kept evidence blocks and retract the
 			// deleted sources' contributions. Best-effort, after a successful
-			// page content update.
+			// page content update. The projection path already persisted both
+			// ledgers before rendering.
 			if s.contribRepo != nil {
-				s.persistContributions(ctx, kbID, slug, tenantID, additions, chunkContentByID)
-				s.upsertPageClaims(ctx, chatModel, kbID, slug, tenantID, additions, chunkContentByID)
+				if !claimsPersisted {
+					s.persistContributions(ctx, kbID, slug, tenantID, additions, chunkContentByID)
+					s.upsertPageClaims(ctx, chatModel, kbID, slug, tenantID, additions, chunkContentByID)
+				}
 				if len(retracts) > 0 && retractKIDs != nil {
 					kids := make([]string, 0, len(retractKIDs))
 					for k := range retractKIDs {

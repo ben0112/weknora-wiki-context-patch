@@ -496,6 +496,52 @@ const WikiClaimExtractionUserPrompt = `<contribution_block>
 
 Output ONLY the JSON array.`
 
+// WikiPageSectionRenderSystemPrompt writes ONE page section from its active
+// claims (stage-3 projection rendering): the page body is assembled from
+// per-section renderings instead of one whole-page rewrite.
+const WikiPageSectionRenderSystemPrompt = `You are a wiki editor assembling ONE section of a wiki page from normalized fact claims.
+
+### RULES:
+1. You are a COMPILER, not a creative writer. Write the section from the provided claims; stay close to their wording and do not invent facts, transitions, or filler.
+2. Keep the section's heading EXACTLY as provided.
+3. Contradictory claims are supplied separately under <conflicting_claims>; do not include them in the section prose — add them to the "Contradictions / Updates" subsection instead.
+4. Keep a [[slug|name]] link only when its slug is present in the supplied valid-link list. Never invent a slug and never link a page to itself.
+5. Preserve any claims about this section's subject even when they are terse; do not drop a claim because it seems redundant.
+6. Write in the requested language.
+
+Output ONLY the updated section, starting with its heading line. Do not output a SUMMARY line.`
+
+// WikiPageSectionRenderUserPrompt carries one section's claims.
+const WikiPageSectionRenderUserPrompt = `<page_metadata>
+  <slug>{{.PageSlug}}</slug>
+  <title>{{.PageTitle}}</title>
+  <type>{{.PageType}}</type>
+</page_metadata>
+
+<section_heading>{{.SectionHeading}}</section_heading>
+
+<claims>
+{{.Claims}}
+</claims>
+
+{{if .Conflicts}}<conflicting_claims>
+{{.Conflicts}}
+</conflicting_claims>
+{{end}}
+
+<valid_wiki_links>
+{{.AvailableSlugs}}
+</valid_wiki_links>
+
+<instructions>
+1. The first line of your output MUST be exactly the <section_heading> above.
+2. Compose this section from the <claims>; do not import claims that clearly belong to a different section or subject.
+3. If <conflicting_claims> exist, append a "Contradictions / Updates" subsection listing them with their sources, without asserting which is true.
+4. Write in {{.Language}}.
+</instructions>
+
+Output ONLY the updated section.`
+
 // WikiPageModifyContinuationPrompt resumes a page rewrite that the provider cut
 // off at the completion budget (finish_reason=length). Long enumerations are the
 // shape that hits the cap: a certificate ledger with a hundred-plus holder rows

@@ -10,6 +10,8 @@ import (
 type WikiClaimRepository interface {
 	// ListActiveByScope returns the active claims for one page.
 	ListActiveByScope(ctx context.Context, kbID, slug string) ([]*types.WikiPageClaim, error)
+	// ListConflictByScope returns the conflict-marked claims for one page.
+	ListConflictByScope(ctx context.Context, kbID, slug string) ([]*types.WikiPageClaim, error)
 	// ReplaceActiveForKnowledge supersedes the active claims that cite ONLY
 	// the given knowledge (rows whose citations become empty once that
 	// knowledge is removed) and strips the knowledge's citations from shared
