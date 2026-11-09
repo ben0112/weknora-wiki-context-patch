@@ -163,6 +163,7 @@ func updateWikiPageRow(db *gorm.DB, page *types.WikiPage) error {
 			"sort_order":       page.SortOrder,
 			"last_edit_source": page.LastEditSource,
 			"last_editor_id":   page.LastEditorID,
+			"manual_locked":    page.ManualLocked,
 			"version":          page.Version,
 			"updated_at":       page.UpdatedAt,
 		})
@@ -310,6 +311,7 @@ func (r *wikiPageRepository) UpdateMeta(ctx context.Context, page *types.WikiPag
 			"wiki_path":     page.WikiPath,
 			"depth":         page.Depth,
 			"sort_order":    page.SortOrder,
+			"manual_locked": page.ManualLocked,
 			"updated_at":    page.UpdatedAt,
 		})
 	if result.Error != nil {
