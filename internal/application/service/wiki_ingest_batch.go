@@ -2116,15 +2116,33 @@ func (s *wikiIngestService) reduceSlugUpdates(
 	// Stage-3 contribution ledger: drop additions whose evidence block is
 	// already recorded for this (page, knowledge), and skip the page rewrite
 	// entirely when there is nothing new to add or retract.
+	var additionKIDs map[string]struct{}
 	if exists && s.contribRepo != nil && len(additions) > 0 {
+		additionKIDs = make(map[string]struct{}, len(additions))
+		for _, a := range additions {
+			additionKIDs[a.KnowledgeID] = struct{}{}
+		}
 		var filterErr error
 		additions, filterErr = s.filterUnchangedAdditions(ctx, tenantID, kbID, slug, additions)
 		if filterErr != nil {
 			logger.Warnf(ctx, "wiki ingest: contribution delta lookup failed for slug %s: %v", slug, filterErr)
 		}
-		if filterErr == nil && len(additions) == 0 && len(retracts) == 0 {
-			logger.Infof(ctx, "wiki ingest: slug %s unchanged (contribution delta empty), skipping page rewrite", slug)
-			return false, "", false, false, nil
+		if filterErr == nil && len(additions) == 0 {
+			// Every retract that is a same-knowledge reparse (its knowledge
+			// still contributes additions this batch) is a replacement, not a
+			// removal; when all retracts are of that kind and no addition
+			// changed, the whole update is a no-op.
+			replaced := true
+			for _, r := range retracts {
+				if _, ok := additionKIDs[r.KnowledgeID]; !ok {
+					replaced = false
+					break
+				}
+			}
+			if replaced {
+				logger.Infof(ctx, "wiki ingest: slug %s unchanged (contribution delta empty), skipping page rewrite", slug)
+				return false, "", false, false, nil
+			}
 		}
 	}
 
@@ -2135,10 +2153,6 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		// page keeps its content and the ledger supersedes instead of
 		// retracting. The deleted_documents prompt block is only for sources
 		// that are genuinely gone.
-		additionKIDs := make(map[string]struct{}, len(additions))
-		for _, a := range additions {
-			additionKIDs[a.KnowledgeID] = struct{}{}
-		}
 		for _, r := range retracts {
 			if _, replaced := additionKIDs[r.KnowledgeID]; replaced {
 				continue
