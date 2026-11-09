@@ -15,7 +15,8 @@ import (
 // wikiAdditionBlock renders the verbatim evidence block one addition
 // contributes to a page, in exactly the format the editor prompt receives
 // (<document>…</document>). The same string is persisted in the contribution
-// ledger, so the hash computed here stays comparable across re-ingests.
+// ledger; the hash (see wikiAdditionHash) is computed over a
+// whitespace-normalized form of it.
 func wikiAdditionBlock(add SlugUpdate, chunkContentByID map[string]string) (string, []string) {
 	cited := collectCitedChunkContent(add.SourceChunks, chunkContentByID)
 	var b strings.Builder
@@ -31,9 +32,19 @@ func wikiAdditionBlock(add SlugUpdate, chunkContentByID map[string]string) (stri
 	return b.String(), add.SourceChunks
 }
 
-// wikiAdditionHash fingerprints one contribution block.
+// normalizeWikiText collapses every whitespace run into a single space and
+// trims the edges, so chunk-boundary and separator differences disappear.
+func normalizeWikiText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// wikiAdditionHash fingerprints one contribution block. Re-parsing a
+// document re-chunks it, which shifts chunk boundaries and separators
+// without changing the underlying text; hashing the whitespace-normalized
+// block keeps the two renderings comparable, so unchanged content produces
+// an empty delta instead of a re-run page rewrite.
 func wikiAdditionHash(block string) string {
-	sum := sha256.Sum256([]byte(block))
+	sum := sha256.Sum256([]byte(normalizeWikiText(block)))
 	return hex.EncodeToString(sum[:])
 }
 
