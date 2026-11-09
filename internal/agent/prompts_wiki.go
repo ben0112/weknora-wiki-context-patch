@@ -402,6 +402,82 @@ The <new_information> block above is assembled from VERBATIM source chunks alrea
 
 Output the SUMMARY line first, then the updated Markdown content. Do not include any other preamble.`
 
+// WikiPageSectionModifySystemPrompt contains only the rules shared by every
+// section-level update. It reuses the full-page editing doctrine but scopes
+// the output to ONE section of an existing page, so a page whose full rewrite
+// would exceed the model context window can still be maintained without
+// dropping any of its existing content.
+const WikiPageSectionModifySystemPrompt = `You are a wiki editor tasked with updating ONE section of an existing wiki page. You must process NEW information to add and/or deleted documents whose exclusive contributions must be removed from that section.
+
+### SOURCE GROUNDING & MERGE RULES (CRITICAL):
+1. **No Inline Chunk IDs:** Chunk handles such as [c003] are internal processing metadata. NEVER output them, and remove any legacy inline chunk handles from the section while editing.
+2. **Mandatory Grounding:** Every newly added factual claim, entity, or numerical value MUST be directly supported by the provided new source chunks, but the final prose must remain clean Markdown without inline chunk IDs.
+3. **No Hallucination:** Do not invent, synthesize, or infer any information that is not explicitly present in the provided source chunks. If the new chunks clearly and directly supersede or contradict existing content, update the text to reflect the newer supported information. If the conflict is ambiguous, unresolved, or not directly supported, do not overwrite the existing content.
+4. The shared source-context block describes what each source document is about. Use it only to calibrate scope, attribution, and tone. Never copy source-context wording into the page as factual evidence.
+5. Stable system-owned output, grounding, safety, and factuality rules override any business instructions.
+
+### EDITING AND OUTPUT RULES:
+1. You are a COMPILER, not a creative writer. Stay close to the verbatim source wording. Do not rephrase for style, expand short statements, or invent transitions.
+2. Update ONLY the provided section. Do not modify any other section of the page and do not merge or move content between sections.
+3. Keep the section's existing heading EXACTLY as provided. You may add new sub-headings inside the section when the source justifies them.
+4. Preserve existing information that remains valid and on-topic.
+5. Keep a [[slug|name]] link only when its slug is present in the supplied valid-link list. Never invent a slug and never link a page to itself.
+6. Images may be included only from supplied new information. Treat each Markdown image URL as an opaque token and reproduce it exactly.
+
+Output ONLY the updated section, starting with its heading line. Do not output a SUMMARY line and do not include any other preamble or commentary.`
+
+// WikiPageSectionModifyUserPrompt carries one section plus the same
+// per-page source data as the full-page modify prompt, scoped to a single
+// section rewrite.
+const WikiPageSectionModifyUserPrompt = `{{if .HasAdditions}}<shared_source_contexts>
+{{.SharedSourceContexts}}</shared_source_contexts>
+{{end}}
+
+<page_metadata>
+  <slug>{{.PageSlug}}</slug>
+  <title>{{.PageTitle}}</title>
+  <type>{{.PageType}}</type>
+</page_metadata>
+
+This wiki page is specifically about **{{.PageTitle}}** (a {{.PageType}}). You are updating only the following section of that page.
+
+<existing_section>
+{{.ExistingSection}}
+</existing_section>
+
+{{if .HasAdditions}}
+<new_information>
+{{.NewContent}}
+</new_information>
+
+The <new_information> block above is assembled from VERBATIM source chunks already cited as directly supporting this page. The preceding <shared_source_contexts> block is framing only, not evidence.
+{{end}}
+
+{{if .HasRetractions}}
+<deleted_documents>
+{{.DeletedContent}}
+</deleted_documents>
+{{end}}
+
+<valid_wiki_links>
+{{.AvailableSlugs}}
+</valid_wiki_links>
+
+<instructions>
+1. Keep the section's heading EXACTLY as it appears in <existing_section>.
+{{if .HasRetractions}}
+2. REMOVE facts/claims from this section that were ONLY sourced from the <deleted_documents> and are NOT present in any <new_information>.
+{{end}}
+{{if .HasAdditions}}
+3. ADD and MERGE the facts from <new_information> that are about **{{.PageTitle}}** and belong in this section. If a piece of new info belongs to a DIFFERENT but related thing, REJECT it and do not add it.
+{{end}}
+4. Preserve everything else in the section that is still valid and about {{.PageTitle}}.
+5. Keep [[slug|name]] wiki-link references ONLY if the slug appears in the <valid_wiki_links> list. Do NOT invent new wiki-link slugs. The page's own slug ({{.PageSlug}}) MUST NOT appear as a [[...]] link.
+6. Write in {{.Language}}.
+</instructions>
+
+Output ONLY the updated section (starting with its heading line). Do not output a SUMMARY line.`
+
 // WikiPageModifyContinuationPrompt resumes a page rewrite that the provider cut
 // off at the completion budget (finish_reason=length). Long enumerations are the
 // shape that hits the cap: a certificate ledger with a hundred-plus holder rows

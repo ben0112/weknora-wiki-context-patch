@@ -2967,7 +2967,7 @@ func (s *wikiIngestService) generateWithTemplateResult(
 		// stops at the completion budget, replay the fragment as an assistant
 		// turn and ask for the tail. Everything else keeps the single-call
 		// behaviour (a truncated JSON extraction already fails its parse).
-		canContinue := promptTpl == agent.WikiPageModifyUserPrompt
+		canContinue := promptTpl == agent.WikiPageModifyUserPrompt || promptTpl == agent.WikiPageSectionModifyUserPrompt
 
 		var (
 			rewrite      strings.Builder

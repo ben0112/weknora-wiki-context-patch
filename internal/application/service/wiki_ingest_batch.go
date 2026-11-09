@@ -2300,6 +2300,24 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			"CustomInstructions":      batchCtx.ContentInstructions,
 			"InstructionScope":        "wiki_content",
 		})
+		if err != nil && errors.Is(err, ErrWikiContextOverflow) {
+			// The whole-page prompt does not fit the model context window.
+			// Fall back to a section-by-section rewrite that never drops
+			// existing content; it returns the same terminal error when the
+			// page cannot be sectioned or a section cannot be updated.
+			var sectioned string
+			sectioned, err = s.rewritePageInSections(
+				ctx, chatModel, slug, pageTitle, pageType, language,
+				existingContent, sharedSourceContexts.String(),
+				newContentBuilder.String(), deletedContent.String(), relatedSlugs.String())
+			if err != nil {
+				logger.Warnf(ctx, "wiki ingest: sectioned rewrite failed for slug %s: %v", slug, err)
+			} else {
+				updatedContent = sectioned
+				err = nil
+				logger.Infof(ctx, "wiki ingest: sectioned rewrite succeeded for slug %s", slug)
+			}
+		}
 
 		if err == nil && updatedContent != "" {
 			// Translate request-local handles (ref-N) the model copied from the
