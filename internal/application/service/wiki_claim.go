@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Tencent/WeKnora/internal/agent"
@@ -69,11 +71,111 @@ func wikiClaimSimilarity(a, b string) float64 {
 // different facts (which typically land below 0.6) apart.
 const wikiClaimMergeSimilarity = 0.78
 
+// wikiClaimConflictSimilarity is the lower bound at which two claims are
+// considered to be ABOUT the same fact; below it they are unrelated. When
+// similarity lands between this bound and the merge threshold AND the numeric
+// values differ, the pair is a contradiction rather than a duplicate.
+const wikiClaimConflictSimilarity = 0.55
+
 // wikiClaimCandidate is one extracted claim plus the section heading it was
 // found under.
 type wikiClaimCandidate struct {
 	Claim   string `json:"claim"`
 	Section string `json:"section"`
+}
+
+// wikiClaimNumberRE extracts numbers (with optional decimals and percent
+// sign) for value comparison between claims.
+var wikiClaimNumberRE = regexp.MustCompile(`\d+(?:\.\d+)?%?`)
+
+// wikiClaimNumbers returns the set of numeric values appearing in a claim.
+func wikiClaimNumbers(text string) map[string]struct{} {
+	matches := wikiClaimNumberRE.FindAllString(text, -1)
+	out := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		out[m] = struct{}{}
+	}
+	return out
+}
+
+// wikiClaimNumbersDiffer reports whether two claims carry different numeric
+// values (including one side having none).
+func wikiClaimNumbersDiffer(a, b string) bool {
+	na, nb := wikiClaimNumbers(a), wikiClaimNumbers(b)
+	if len(na) != len(nb) {
+		return true
+	}
+	for k := range na {
+		if _, ok := nb[k]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// wikiClaimMergeDecision is the outcome of comparing a new claim against an
+// existing active claim.
+type wikiClaimMergeDecision int
+
+const (
+	wikiClaimMergeDecisionInsert    wikiClaimMergeDecision = iota
+	wikiClaimMergeDecisionCite                             // same fact: merge citation
+	wikiClaimMergeDecisionSupersede                        // same fact, newer value: replace
+	wikiClaimMergeDecisionConflict                         // same fact, contradictory values
+)
+
+// wikiClaimMergeDecision decides how a new claim relates to an existing
+// active claim:
+//   - identical (key) or near-identical wording with equal values → citation merge;
+//   - same fact with different numeric values → supersede (the newer claim wins);
+//   - same-topic wording with different values below the merge threshold → conflict;
+//   - otherwise unrelated → insert new.
+func wikiClaimMergeDecisionFor(existing *types.WikiPageClaim, cand wikiClaimCandidate) wikiClaimMergeDecision {
+	key := normalizeWikiClaimKey(cand.Claim)
+	sim := wikiClaimSimilarity(existing.ClaimText, cand.Claim)
+	differ := wikiClaimNumbersDiffer(existing.ClaimText, cand.Claim)
+	switch {
+	case existing.ClaimKey == key || sim >= wikiClaimMergeSimilarity:
+		if differ {
+			return wikiClaimMergeDecisionSupersede
+		}
+		return wikiClaimMergeDecisionCite
+	case sim >= wikiClaimConflictSimilarity && differ:
+		return wikiClaimMergeDecisionConflict
+	default:
+		return wikiClaimMergeDecisionInsert
+	}
+}
+
+// wikiClaimDateRE matches YYYY-MM-DD / YYYY/MM/DD / YYYY年M月D日 dates.
+var wikiClaimDateRE = regexp.MustCompile(`(\d{4})[年/\-](\d{1,2})[月/\-](\d{1,2})日?`)
+
+// wikiClaimTimeRange extracts valid_from/valid_to from explicit dates in the
+// claim text. The first date becomes valid_from and, when a second date is
+// present, the later one becomes valid_to.
+func wikiClaimTimeRange(text string) (*time.Time, *time.Time) {
+	matches := wikiClaimDateRE.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	parse := func(m []string) time.Time {
+		t, err := time.Parse("2006-1-2", m[1]+"-"+m[2]+"-"+m[3])
+		if err != nil {
+			return time.Time{}
+		}
+		return t
+	}
+	from := parse(matches[0])
+	var to *time.Time
+	if len(matches) > 1 {
+		if v := parse(matches[1]); !v.IsZero() {
+			to = &v
+		}
+	}
+	if from.IsZero() {
+		return nil, to
+	}
+	return &from, to
 }
 
 // parseWikiClaimCandidates parses the extraction LLM's JSON array. A failure
@@ -147,32 +249,48 @@ func (s *wikiIngestService) upsertPageClaims(
 		citation := types.WikiClaimCitation{KnowledgeID: add.KnowledgeID, ChunkID: firstChunkID(add)}
 		for _, c := range candidates {
 			key := normalizeWikiClaimKey(c.Claim)
-			merged := false
-			for _, ex := range existing {
-				if ex.ClaimKey != key && wikiClaimSimilarity(ex.ClaimText, c.Claim) < wikiClaimMergeSimilarity {
+			action := wikiClaimMergeDecisionInsert
+			target := -1
+			for i := range existing {
+				d := wikiClaimMergeDecisionFor(existing[i], c)
+				if d == wikiClaimMergeDecisionInsert {
 					continue
 				}
-				if err := s.claimRepo.AppendCitations(ctx, ex.ID, []types.WikiClaimCitation{citation}); err != nil {
-					logger.Warnf(ctx, "wiki ingest: claim citation merge id=%d failed: %v", ex.ID, err)
+				// Prefer the strongest relation: supersede > conflict > cite.
+				if d > action {
+					action = d
+					target = i
 				}
-				merged = true
-				break
 			}
-			if merged {
+			from, to := wikiClaimTimeRange(c.Claim)
+			switch action {
+			case wikiClaimMergeDecisionCite:
+				if err := s.claimRepo.AppendCitations(ctx, existing[target].ID, []types.WikiClaimCitation{citation}); err != nil {
+					logger.Warnf(ctx, "wiki ingest: claim citation merge id=%d failed: %v", existing[target].ID, err)
+				}
 				continue
+			case wikiClaimMergeDecisionSupersede:
+				old := existing[target]
+				if err := s.claimRepo.SupersedeClaim(ctx, old.ID); err != nil {
+					logger.Warnf(ctx, "wiki ingest: claim supersede id=%d failed: %v", old.ID, err)
+				}
+				carried := append(parseClaimCitations(old.Citations), citation)
+				toInsert = append(toInsert, s.newWikiClaimRow(kbID, slug, tenantID, add, citation, c, key, carried, old.ID, from, to))
+				existing = removeWikiClaimAt(existing, target)
+				logger.Infof(ctx, "wiki ingest: claim superseded id=%d -> new claim for slug %s", old.ID, slug)
+			case wikiClaimMergeDecisionConflict:
+				old := existing[target]
+				if err := s.claimRepo.MarkConflict(ctx, old.ID); err != nil {
+					logger.Warnf(ctx, "wiki ingest: claim conflict mark id=%d failed: %v", old.ID, err)
+				}
+				toInsert = append(toInsert, s.newWikiClaimRow(kbID, slug, tenantID, add, citation, c, key,
+					[]types.WikiClaimCitation{citation}, 0, from, to))
+				existing = removeWikiClaimAt(existing, target)
+				logger.Infof(ctx, "wiki ingest: claim conflict marked id=%d vs new claim for slug %s", old.ID, slug)
+			default:
+				toInsert = append(toInsert, s.newWikiClaimRow(kbID, slug, tenantID, add, citation, c, key,
+					[]types.WikiClaimCitation{citation}, 0, from, to))
 			}
-			toInsert = append(toInsert, &types.WikiPageClaim{
-				TenantID:        tenantID,
-				KnowledgeBaseID: kbID,
-				Slug:            slug,
-				KnowledgeID:     add.KnowledgeID,
-				ChunkID:         citation.ChunkID,
-				SectionKey:      strings.TrimSpace(c.Section),
-				ClaimKey:        key,
-				ClaimText:       c.Claim,
-				Citations:       types.JSON(mustJSONCitations([]types.WikiClaimCitation{citation})),
-				Status:          types.WikiClaimActive,
-			})
 		}
 	}
 	if err := s.claimRepo.InsertClaims(ctx, toInsert); err != nil {
@@ -230,4 +348,48 @@ func mustJSONCitations(citations []types.WikiClaimCitation) []byte {
 		return []byte("[]")
 	}
 	return raw
+}
+
+// parseClaimCitations decodes a claim row's citations JSON.
+func parseClaimCitations(raw types.JSON) []types.WikiClaimCitation {
+	var citations []types.WikiClaimCitation
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &citations)
+	}
+	return citations
+}
+
+// newWikiClaimRow assembles one claim row for insertion.
+func (s *wikiIngestService) newWikiClaimRow(
+	kbID, slug string,
+	tenantID uint64,
+	add SlugUpdate,
+	citation types.WikiClaimCitation,
+	cand wikiClaimCandidate,
+	key string,
+	citations []types.WikiClaimCitation,
+	supersedesID int64,
+	from, to *time.Time,
+) *types.WikiPageClaim {
+	return &types.WikiPageClaim{
+		TenantID:        tenantID,
+		KnowledgeBaseID: kbID,
+		Slug:            slug,
+		KnowledgeID:     add.KnowledgeID,
+		ChunkID:         citation.ChunkID,
+		SectionKey:      strings.TrimSpace(cand.Section),
+		ClaimKey:        key,
+		ClaimText:       cand.Claim,
+		Citations:       types.JSON(mustJSONCitations(citations)),
+		Status:          types.WikiClaimActive,
+		SupersedesID:    supersedesID,
+		ValidFrom:       from,
+		ValidTo:         to,
+	}
+}
+
+// removeWikiClaimAt drops index i from a claim slice (order not preserved).
+func removeWikiClaimAt(claims []*types.WikiPageClaim, i int) []*types.WikiPageClaim {
+	claims[i] = claims[len(claims)-1]
+	return claims[:len(claims)-1]
 }

@@ -18,6 +18,10 @@ type WikiClaimRepository interface {
 	StripKnowledgeCitations(ctx context.Context, kbID, slug, knowledgeID string) error
 	// InsertClaims inserts new active claim rows.
 	InsertClaims(ctx context.Context, claims []*types.WikiPageClaim) error
+	// SupersedeClaim marks one active claim superseded.
+	SupersedeClaim(ctx context.Context, claimID int64) error
+	// MarkConflict marks one active claim as conflicting.
+	MarkConflict(ctx context.Context, claimID int64) error
 	// AppendCitations merges the given citations into an existing claim row.
 	AppendCitations(ctx context.Context, claimID int64, citations []types.WikiClaimCitation) error
 	// RetractByKnowledge marks the given knowledge's active claims retracted

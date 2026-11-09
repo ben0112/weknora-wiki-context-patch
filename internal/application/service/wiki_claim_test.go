@@ -71,10 +71,65 @@ func (f *fakeClaimRepo) AppendCitations(_ context.Context, claimID int64, citati
 	return nil
 }
 
+func (f *fakeClaimRepo) SupersedeClaim(_ context.Context, claimID int64) error {
+	for _, c := range f.active {
+		if c.ID == claimID {
+			c.Status = types.WikiClaimSuperseded
+		}
+	}
+	return nil
+}
+
+func (f *fakeClaimRepo) MarkConflict(_ context.Context, claimID int64) error {
+	for _, c := range f.active {
+		if c.ID == claimID {
+			c.Status = types.WikiClaimConflict
+		}
+	}
+	return nil
+}
+
 func (f *fakeClaimRepo) RetractByKnowledge(_ context.Context, _ string, _ []string, _ []string) error {
 	return nil
 }
 
 func (f *fakeClaimRepo) CountByScope(_ context.Context, _, _ string) (int64, error) {
 	return int64(len(f.active)), nil
+}
+
+func TestWikiClaimMergeDecisionFor(t *testing.T) {
+	existing := &types.WikiPageClaim{ID: 1, ClaimKey: normalizeWikiClaimKey("对参展费用给予不超过50%的补贴"), ClaimText: "对参展费用给予不超过50%的补贴"}
+	// Same fact, same value, wording drift → cite.
+	if got := wikiClaimMergeDecisionFor(existing, wikiClaimCandidate{Claim: "对参展费用，给予不超过50%的补贴。"}); got != wikiClaimMergeDecisionCite {
+		t.Fatalf("wording drift = %d, want cite", got)
+	}
+	// Same fact, different value → supersede.
+	if got := wikiClaimMergeDecisionFor(existing, wikiClaimCandidate{Claim: "对参展费用给予不超过60%的补贴"}); got != wikiClaimMergeDecisionSupersede {
+		t.Fatalf("value change = %d, want supersede", got)
+	}
+	// Same topic, contradictory value, lower similarity → conflict.
+	if got := wikiClaimMergeDecisionFor(existing, wikiClaimCandidate{Claim: "参展费用补贴比例调整为60%"}); got != wikiClaimMergeDecisionConflict {
+		t.Fatalf("contradiction = %d, want conflict", got)
+	}
+	// Unrelated → insert.
+	if got := wikiClaimMergeDecisionFor(existing, wikiClaimCandidate{Claim: "申请企业应于展会结束后30个工作日内提交申请材料"}); got != wikiClaimMergeDecisionInsert {
+		t.Fatalf("unrelated = %d, want insert", got)
+	}
+}
+
+func TestWikiClaimNumbersAndTimeRange(t *testing.T) {
+	if !wikiClaimNumbersDiffer("补贴50%", "补贴60%") {
+		t.Fatal("different values must differ")
+	}
+	if wikiClaimNumbersDiffer("补贴50%", "补贴50%") {
+		t.Fatal("equal values must not differ")
+	}
+	from, to := wikiClaimTimeRange("自2026年12月1日起补贴比例调整为60%")
+	if from == nil || from.Format("2006-01-02") != "2026-12-01" || to != nil {
+		t.Fatalf("time range = %v, %v", from, to)
+	}
+	from2, to2 := wikiClaimTimeRange("政策有效期2026-01-01至2026-12-31")
+	if from2 == nil || to2 == nil || from2.Format("2006-01-02") != "2026-01-01" || to2.Format("2006-01-02") != "2026-12-31" {
+		t.Fatalf("two-date range = %v, %v", from2, to2)
+	}
 }

@@ -101,6 +101,20 @@ func (r *wikiClaimRepository) InsertClaims(ctx context.Context, claims []*types.
 	return r.db.WithContext(ctx).Create(claims).Error
 }
 
+// SupersedeClaim marks one claim superseded.
+func (r *wikiClaimRepository) SupersedeClaim(ctx context.Context, claimID int64) error {
+	return r.db.WithContext(ctx).Model(&types.WikiPageClaim{}).
+		Where("id = ? AND status = ?", claimID, types.WikiClaimActive).
+		Updates(map[string]interface{}{"status": types.WikiClaimSuperseded, "updated_at": time.Now()}).Error
+}
+
+// MarkConflict marks one claim as conflicting.
+func (r *wikiClaimRepository) MarkConflict(ctx context.Context, claimID int64) error {
+	return r.db.WithContext(ctx).Model(&types.WikiPageClaim{}).
+		Where("id = ? AND status = ?", claimID, types.WikiClaimActive).
+		Updates(map[string]interface{}{"status": types.WikiClaimConflict, "updated_at": time.Now()}).Error
+}
+
 // AppendCitations merges citation pairs into an existing claim row.
 func (r *wikiClaimRepository) AppendCitations(
 	ctx context.Context, claimID int64, citations []types.WikiClaimCitation,
