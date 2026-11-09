@@ -2130,12 +2130,27 @@ func (s *wikiIngestService) reduceSlugUpdates(
 
 	var retractKIDs map[string]bool
 	if len(retracts) > 0 {
+		// A knowledge that also contributes additions in this batch is being
+		// REPLACED (re-parse), not removed: drop its retract entries so the
+		// page keeps its content and the ledger supersedes instead of
+		// retracting. The deleted_documents prompt block is only for sources
+		// that are genuinely gone.
+		additionKIDs := make(map[string]struct{}, len(additions))
+		for _, a := range additions {
+			additionKIDs[a.KnowledgeID] = struct{}{}
+		}
 		for _, r := range retracts {
+			if _, replaced := additionKIDs[r.KnowledgeID]; replaced {
+				continue
+			}
 			fmt.Fprintf(&deletedContent, "<document>\n<title>%s</title>\n<content>\n%s\n</content>\n</document>\n\n", r.DocTitle, r.RetractDocContent)
 		}
 
 		retractKIDs = make(map[string]bool)
 		for _, r := range retracts {
+			if _, replaced := additionKIDs[r.KnowledgeID]; replaced {
+				continue
+			}
 			retractKIDs[r.KnowledgeID] = true
 		}
 
