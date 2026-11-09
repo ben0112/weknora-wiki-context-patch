@@ -74,8 +74,10 @@ const wikiClaimMergeSimilarity = 0.78
 // wikiClaimConflictSimilarity is the lower bound at which two claims are
 // considered to be ABOUT the same fact; below it they are unrelated. When
 // similarity lands between this bound and the merge threshold AND the numeric
-// values differ, the pair is a contradiction rather than a duplicate.
-const wikiClaimConflictSimilarity = 0.55
+// values differ, the pair is a contradiction rather than a duplicate. 0.35
+// over 2-rune shingles catches claims that share the subject phrase
+// ("参展费用补贴…") but differ in the value wording.
+const wikiClaimConflictSimilarity = 0.35
 
 // wikiClaimCandidate is one extracted claim plus the section heading it was
 // found under.

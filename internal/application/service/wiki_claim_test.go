@@ -107,7 +107,7 @@ func TestWikiClaimMergeDecisionFor(t *testing.T) {
 	if got := wikiClaimMergeDecisionFor(existing, wikiClaimCandidate{Claim: "对参展费用给予不超过60%的补贴"}); got != wikiClaimMergeDecisionSupersede {
 		t.Fatalf("value change = %d, want supersede", got)
 	}
-	// Same topic, contradictory value, lower similarity → conflict.
+	// Same subject, contradictory value, differently worded → conflict.
 	if got := wikiClaimMergeDecisionFor(existing, wikiClaimCandidate{Claim: "参展费用补贴比例调整为60%"}); got != wikiClaimMergeDecisionConflict {
 		t.Fatalf("contradiction = %d, want conflict", got)
 	}
