@@ -246,6 +246,9 @@ func (s *wikiPageService) UpdatePage(ctx context.Context, page *types.WikiPage) 
 	existing.FolderID = page.FolderID
 	existing.SortOrder = page.SortOrder
 	existing.Status = page.Status
+	// ManualLocked travels as bookkeeping: the caller (handler unlock, revert,
+	// or pipeline) is authoritative over whether the page is pinned.
+	existing.ManualLocked = page.ManualLocked
 	existing.UpdatedAt = time.Now()
 
 	// CategoryPath is a derived cache of FolderID — recompute it from the
