@@ -2109,15 +2109,32 @@ func (s *wikiIngestService) reduceSlugUpdates(
 	var newContentBuilder strings.Builder
 	var sharedSourceContexts strings.Builder
 	var docTitles []string
+	var chunkContentByID map[string]string
 
 	language := resolveSlugUpdateLanguage(ctx, updates)
 
+	// Stage-3 contribution ledger: drop additions whose evidence block is
+	// already recorded for this (page, knowledge), and skip the page rewrite
+	// entirely when there is nothing new to add or retract.
+	if exists && s.contribRepo != nil && len(additions) > 0 {
+		var filterErr error
+		additions, filterErr = s.filterUnchangedAdditions(ctx, tenantID, kbID, slug, additions)
+		if filterErr != nil {
+			logger.Warnf(ctx, "wiki ingest: contribution delta lookup failed for slug %s: %v", slug, filterErr)
+		}
+		if filterErr == nil && len(additions) == 0 && len(retracts) == 0 {
+			logger.Infof(ctx, "wiki ingest: slug %s unchanged (contribution delta empty), skipping page rewrite", slug)
+			return false, "", false, false, nil
+		}
+	}
+
+	var retractKIDs map[string]bool
 	if len(retracts) > 0 {
 		for _, r := range retracts {
 			fmt.Fprintf(&deletedContent, "<document>\n<title>%s</title>\n<content>\n%s\n</content>\n</document>\n\n", r.DocTitle, r.RetractDocContent)
 		}
 
-		retractKIDs := make(map[string]bool)
+		retractKIDs = make(map[string]bool)
 		for _, r := range retracts {
 			retractKIDs[r.KnowledgeID] = true
 		}
@@ -2160,15 +2177,13 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		// Resolve SourceChunks → chunk contents in a single batched query per
 		// knowledge ID, so the <new_information> block can quote the chunks
 		// verbatim instead of relying on the short Details paraphrase.
-		chunkContentByID := s.resolveCitedChunks(ctx, tenantID, additions)
-		// A document summary is shared by every page derived from that document.
+		chunkContentByID = s.resolveCitedChunks(ctx, tenantID, additions)
 		// Render a deterministic, de-duplicated block before any page-specific
 		// metadata so provider prefix caches can reuse it across parallel reduce
 		// calls.
 		sourceContextByRef := make(map[string]string)
 
 		for _, add := range additions {
-			cited := collectCitedChunkContent(add.SourceChunks, chunkContentByID)
 			// Frame the chunks with the document-level summary body so the
 			// editor model knows BOTH what the document is about AND what
 			// kind of document it is (resume vs announcement vs product
@@ -2187,18 +2202,8 @@ func (s *wikiIngestService) reduceSlugUpdates(
 					add.DocTitle, sourceCtx,
 				)
 			}
-			if cited != "" {
-				fmt.Fprintf(&newContentBuilder,
-					"<document>\n<title>%s</title>\n<content>\n**%s**: %s\n\n%s\n</content>\n</document>\n\n",
-					add.DocTitle, add.Item.Name, add.Item.Description, cited)
-			} else {
-				// Fallback: no citations available (legacy path, citation pass
-				// failed, or bad chunk IDs were filtered out) — stick with
-				// the short Details summary so the page still gets real text.
-				fmt.Fprintf(&newContentBuilder,
-					"<document>\n<title>%s</title>\n<content>\n**%s**: %s\n\n%s\n</content>\n</document>\n\n",
-					add.DocTitle, add.Item.Name, add.Item.Description, add.Item.Details)
-			}
+			block, _ := wikiAdditionBlock(add, chunkContentByID)
+			newContentBuilder.WriteString(block)
 			docTitles = appendUnique(docTitles, add.DocTitle)
 
 			for _, alias := range add.Item.Aliases {
@@ -2332,6 +2337,19 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			}
 			if updatedSummary != "" {
 				page.Summary = updatedSummary
+			}
+			// Stage-3 ledger: record the kept evidence blocks and retract the
+			// deleted sources' contributions. Best-effort, after a successful
+			// page content update.
+			if s.contribRepo != nil {
+				s.persistContributions(ctx, kbID, slug, tenantID, additions, chunkContentByID)
+				if len(retracts) > 0 && retractKIDs != nil {
+					kids := make([]string, 0, len(retractKIDs))
+					for k := range retractKIDs {
+						kids = append(kids, k)
+					}
+					s.retractContributions(ctx, kbID, slug, kids)
+				}
 			}
 			changed = true
 		} else if err != nil {

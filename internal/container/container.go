@@ -205,6 +205,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewMemoryRepository))
 	must(container.Provide(repository.NewTaskPendingOpsRepository))
 	must(container.Provide(repository.NewTaskDeadLetterRepository))
+	must(container.Provide(repository.NewWikiContributionRepository))
 	must(container.Provide(repository.NewSandboxAllocationRepository))
 
 	// MCP manager for managing MCP client connections
