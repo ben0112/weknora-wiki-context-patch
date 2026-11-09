@@ -38,13 +38,18 @@ func normalizeWikiText(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// wikiAdditionHash fingerprints one contribution block. Re-parsing a
-// document re-chunks it, which shifts chunk boundaries and separators
-// without changing the underlying text; hashing the whitespace-normalized
-// block keeps the two renderings comparable, so unchanged content produces
-// an empty delta instead of a re-run page rewrite.
-func wikiAdditionHash(block string) string {
-	sum := sha256.Sum256([]byte(normalizeWikiText(block)))
+// wikiAdditionHash fingerprints the EVIDENCE of one addition: the document
+// title plus the cited chunk text (or the short Details fallback). The
+// LLM-derived Name/Description paraphrase is deliberately excluded — it can
+// drift between runs even when the source text is unchanged, and counting it
+// would defeat the delta check. Whitespace is normalized first so re-parses
+// that merely re-chunk the document still hash identically.
+func wikiAdditionHash(add SlugUpdate, chunkContentByID map[string]string) string {
+	cited := collectCitedChunkContent(add.SourceChunks, chunkContentByID)
+	if cited == "" {
+		cited = add.Item.Details
+	}
+	sum := sha256.Sum256([]byte(normalizeWikiText(add.DocTitle + "\x00" + cited)))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -73,8 +78,7 @@ func (s *wikiIngestService) filterUnchangedAdditions(
 	kept := make([]SlugUpdate, 0, len(additions))
 	batchSeen := make(map[string]struct{}, len(additions))
 	for _, add := range additions {
-		block, _ := wikiAdditionBlock(add, chunkContentByID)
-		h := wikiAdditionHash(block)
+		h := wikiAdditionHash(add, chunkContentByID)
 		key := add.KnowledgeID + "\x00" + h
 		if _, ok := hashByKnowledge[add.KnowledgeID][h]; ok {
 			continue
@@ -117,7 +121,7 @@ func (s *wikiIngestService) persistContributions(
 			KnowledgeID:     add.KnowledgeID,
 			ChunkIDs:        types.JSON(encoded),
 			Content:         block,
-			ContentHash:     wikiAdditionHash(block),
+			ContentHash:     wikiAdditionHash(add, chunkContentByID),
 			Status:          types.WikiContributionActive,
 		})
 	}

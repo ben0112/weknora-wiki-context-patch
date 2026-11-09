@@ -55,15 +55,22 @@ func TestWikiAdditionBlockAndHash(t *testing.T) {
 		SourceChunks: []string{"c1"},
 		Item:         extractedItem{Name: "n", Description: "d"},
 	}
-	block, ids := wikiAdditionBlock(add, map[string]string{"c1": "chunk text"})
+	chunks := map[string]string{"c1": "chunk text"}
+	block, ids := wikiAdditionBlock(add, chunks)
 	if block == "" || ids == nil {
 		t.Fatal("empty block")
 	}
-	if wikiAdditionHash(block) != wikiAdditionHash(block) {
+	h1 := wikiAdditionHash(add, chunks)
+	if h1 != wikiAdditionHash(add, chunks) {
 		t.Fatal("hash not deterministic")
 	}
-	if wikiAdditionHash(block) == wikiAdditionHash(block+"x") {
-		t.Fatal("hash collision on different input")
+	other := add
+	other.Item = extractedItem{Name: "other", Description: "different"}
+	if wikiAdditionHash(other, chunks) != h1 {
+		t.Fatal("hash must ignore the LLM Name/Description paraphrase")
+	}
+	if wikiAdditionHash(add, map[string]string{"c1": "different text"}) == h1 {
+		t.Fatal("hash must change when the cited evidence changes")
 	}
 }
 
