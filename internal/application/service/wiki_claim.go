@@ -72,12 +72,16 @@ func wikiClaimSimilarity(a, b string) float64 {
 const wikiClaimMergeSimilarity = 0.78
 
 // wikiClaimConflictSimilarity is the lower bound at which two claims are
-// considered to be ABOUT the same fact; below it they are unrelated. When
-// similarity lands between this bound and the merge threshold AND the numeric
-// values differ, the pair is a contradiction rather than a duplicate. 0.35
+// considered to be ABOUT the same fact; below it they are unrelated. 0.35
 // over 2-rune shingles catches claims that share the subject phrase
 // ("参展费用补贴…") but differ in the value wording.
 const wikiClaimConflictSimilarity = 0.35
+
+// wikiClaimSupersedeSimilarity is the band above which a same-fact claim with
+// different numeric values supersedes the older claim. Claims in
+// [wikiClaimConflictSimilarity, wikiClaimSupersedeSimilarity) with differing
+// values are recorded as conflicts instead.
+const wikiClaimSupersedeSimilarity = 0.55
 
 // wikiClaimCandidate is one extracted claim plus the section heading it was
 // found under.
@@ -142,6 +146,8 @@ func wikiClaimMergeDecisionFor(existing *types.WikiPageClaim, cand wikiClaimCand
 			return wikiClaimMergeDecisionSupersede
 		}
 		return wikiClaimMergeDecisionCite
+	case sim >= wikiClaimSupersedeSimilarity && differ:
+		return wikiClaimMergeDecisionSupersede
 	case sim >= wikiClaimConflictSimilarity && differ:
 		return wikiClaimMergeDecisionConflict
 	default:
