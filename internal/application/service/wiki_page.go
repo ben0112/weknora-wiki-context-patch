@@ -264,6 +264,11 @@ func (s *wikiPageService) UpdatePage(ctx context.Context, page *types.WikiPage) 
 		// The new version is authored by whoever is driving this write.
 		existing.LastEditSource = types.WikiEditSourceFromContext(ctx)
 		existing.LastEditorID, _ = types.UserIDFromContext(ctx)
+		// A human edit pins the page: the ingest pipeline must not overwrite
+		// it until the lock is released (see wiki_ingest_batch reduce).
+		if types.NormalizeWikiEditSource(existing.LastEditSource) == types.WikiEditSourceUser {
+			existing.ManualLocked = true
+		}
 
 		// Snapshot the superseded version and write the new one atomically,
 		// so the content of every past version is preserved and a failed
@@ -428,6 +433,9 @@ func (s *wikiPageService) RevertPageToVersion(
 	target.PageType = rev.PageType
 	target.Status = rev.Status
 	target.Aliases = append(types.StringArray(nil), rev.Aliases...)
+	// A revert returns the page to pipeline ownership: clear the manual lock
+	// so ingest can maintain it again.
+	target.ManualLocked = false
 
 	return s.UpdatePage(types.WithWikiEditSource(ctx, types.WikiEditSourceRevert), &target)
 }

@@ -2132,6 +2132,16 @@ func (s *wikiIngestService) reduceSlugUpdates(
 	// already recorded for this (page, knowledge), and skip the page rewrite
 	// entirely when there is nothing new to add or retract.
 	var additionKIDs map[string]struct{}
+	if exists && page.ManualLocked {
+		// A human pinned this page: keep its content, but still record the
+		// new evidence in the ledgers so an unlock + re-parse can adopt it.
+		if s.contribRepo != nil && len(additions) > 0 {
+			s.persistContributions(ctx, kbID, slug, tenantID, additions, chunkContentByID)
+			s.upsertPageClaims(ctx, chatModel, kbID, slug, tenantID, additions, chunkContentByID)
+		}
+		logger.Infof(ctx, "wiki ingest: slug %s is manually locked, skipping page rewrite", slug)
+		return false, "", false, false, nil
+	}
 	if exists && s.contribRepo != nil && len(additions) > 0 {
 		additionKIDs = make(map[string]struct{}, len(additions))
 		for _, a := range additions {
@@ -2355,6 +2365,7 @@ func (s *wikiIngestService) reduceSlugUpdates(
 				language:       language,
 				existingBody:   page.Content,
 				availableSlugs: relatedSlugs.String(),
+				tenantID:       tenantID,
 			})
 			if rerr != nil {
 				logger.Warnf(ctx, "wiki ingest: claim projection for slug %s failed (%v); falling back to full modify", slug, rerr)

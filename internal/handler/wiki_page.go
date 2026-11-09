@@ -566,6 +566,9 @@ func (h *WikiPageHandler) UpdatePage(c *gin.Context) {
 	if req.Aliases != nil {
 		page.Aliases = *req.Aliases
 	}
+	if req.ManualLocked != nil {
+		page.ManualLocked = *req.ManualLocked
+	}
 
 	updated, err := h.wikiService.UpdatePage(ctx, &page)
 	if err != nil {

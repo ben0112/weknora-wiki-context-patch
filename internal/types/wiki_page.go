@@ -257,6 +257,10 @@ type WikiPage struct {
 	// sync from background jobs) leave it untouched so it can be used as a
 	// real "the page was edited" signal.
 	Version int `json:"version" gorm:"default:1" extensions:"x-agent"`
+	// ManualLocked pins a page that a human edited through the UI/API: the
+	// wiki ingest pipeline keeps the page's content (and only updates
+	// bookkeeping/ledgers) until the lock is released.
+	ManualLocked bool `json:"manual_locked" gorm:"default:false"`
 	// LastEditSource records who authored the CURRENT version: pipeline |
 	// agent | user | revert. Empty for legacy rows (treated as pipeline).
 	// When the version is superseded this value travels into the revision
@@ -390,6 +394,9 @@ type WikiPageUpdateRequest struct {
 	PageType *string      `json:"page_type,omitempty"`
 	Status   *string      `json:"status,omitempty"`
 	Aliases  *StringArray `json:"aliases,omitempty"`
+	// ManualLocked lets an operator release the manual-edit lock explicitly
+	// (false) or pin the page (true) without changing its content.
+	ManualLocked *bool `json:"manual_locked,omitempty"`
 	// Version is the optimistic-lock guard: when > 0 the update is rejected
 	// with a conflict if the stored version differs (someone else edited the
 	// page since the client loaded it). 0 skips the check (legacy clients).
