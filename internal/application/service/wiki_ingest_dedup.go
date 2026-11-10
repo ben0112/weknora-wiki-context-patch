@@ -239,7 +239,22 @@ func exactIdentityTarget(
 	crossMatches := make([]string, 0, 2)
 	for slug := range candidates {
 		page := pages[slug]
-		if page == nil || normalizeWikiIdentityTitle(page.Title) != identity {
+		if page == nil {
+			continue
+		}
+		hit := normalizeWikiIdentityTitle(page.Title) == identity
+		if !hit {
+			// Alias fast path: extraction drift re-spells the same thing
+			// (synonyms, word-order variants) — an existing page whose alias
+			// array contains this identity is the same page.
+			for _, alias := range page.Aliases {
+				if normalizeWikiIdentityTitle(alias) == identity {
+					hit = true
+					break
+				}
+			}
+		}
+		if !hit {
 			continue
 		}
 		if page.PageType == pageType {
@@ -574,6 +589,12 @@ func (s *wikiIngestService) attachExactIdentityPages(
 		bindExactIdentityPages(slugs, cached[identity], pageType, identity, candidatePages, itemCandidates)
 	}
 
+	// Alias fast path (upstream #4149 direction): extraction drift re-spells
+	// an existing page, so its title never matches — but the earlier spelling
+	// was persisted as a page alias. Look those pages up deterministically and
+	// let exactIdentityTarget reuse them.
+	s.attachAliasIdentityPages(ctx, kbID, pageType, slugsByIdentity, candidatePages, itemCandidates)
+
 	// Cross-type safety net (issue #3526): the trigram probe that feeds
 	// itemCandidates usually surfaces a same-title page of the other type,
 	// but not always (formatting drift beyond whitespace/case). Fetch those
@@ -625,6 +646,59 @@ func (s *wikiIngestService) attachExactIdentityPages(
 				candidatePages[p.Slug] = p
 			}
 			for _, slug := range slugs {
+				own := itemCandidates[slug]
+				if own == nil {
+					own = make(map[string]bool)
+					itemCandidates[slug] = own
+				}
+				own[p.Slug] = true
+			}
+		}
+	}
+	// Cross-type aliases as well: a drift-spelled page of the other type must
+	// be reused rather than twinned.
+	s.attachAliasIdentityPages(ctx, kbID, other, slugsByIdentity, candidatePages, itemCandidates)
+}
+
+// attachAliasIdentityPages looks up pages whose aliases array contains one of
+// the normalized identities and registers them as dedup candidates for the
+// corresponding extracted items.
+func (s *wikiIngestService) attachAliasIdentityPages(
+	ctx context.Context,
+	kbID, pageType string,
+	slugsByIdentity map[string][]string,
+	candidatePages map[string]*types.WikiPageLite,
+	itemCandidates map[string]map[string]bool,
+) {
+	identities := make([]string, 0, len(slugsByIdentity))
+	for identity := range slugsByIdentity {
+		identities = append(identities, identity)
+	}
+	if len(identities) == 0 {
+		return
+	}
+	pages, err := s.wikiService.FindPagesByNormalizedAliases(ctx, kbID, pageType, identities)
+	if err != nil {
+		logger.Warnf(ctx, "wiki ingest: alias identity lookup failed for %s (%d titles): %v", pageType, len(identities), err)
+		return
+	}
+	identitySet := make(map[string]struct{}, len(identities))
+	for _, id := range identities {
+		identitySet[id] = struct{}{}
+	}
+	for _, p := range pages {
+		if p == nil || p.Slug == "" {
+			continue
+		}
+		for _, alias := range p.Aliases {
+			id := normalizeWikiIdentityTitle(alias)
+			if _, ok := identitySet[id]; !ok {
+				continue
+			}
+			if _, ok := candidatePages[p.Slug]; !ok {
+				candidatePages[p.Slug] = p
+			}
+			for _, slug := range slugsByIdentity[id] {
 				own := itemCandidates[slug]
 				if own == nil {
 					own = make(map[string]bool)

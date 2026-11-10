@@ -1296,6 +1296,47 @@ func (r *wikiPageRepository) FindPagesByNormalizedTitles(
 	return out, nil
 }
 
+// FindPagesByNormalizedAliases returns non-archived pages of pageType that
+// carry one of the normalized alias identities in their aliases array. This
+// is the deterministic alias fast path that closes extraction drift between
+// synonym spellings without an LLM call (upstream #4149 direction).
+func (r *wikiPageRepository) FindPagesByNormalizedAliases(
+	ctx context.Context,
+	kbID, pageType string,
+	identities []string,
+) ([]*types.WikiPageLite, error) {
+	identities = uniqNormalizedTitleIdentities(identities)
+	if kbID == "" || pageType == "" || len(identities) == 0 {
+		return nil, nil
+	}
+	out := make([]*types.WikiPageLite, 0, len(identities))
+	for start := 0; start < len(identities); start += wikiNormalizedTitleQueryChunk {
+		end := start + wikiNormalizedTitleQueryChunk
+		if end > len(identities) {
+			end = len(identities)
+		}
+		chunk := identities[start:end]
+		var rows []types.WikiPageLite
+		if err := r.db.WithContext(ctx).
+			Model(&types.WikiPage{}).
+			Select("slug, title, page_type, status, aliases, out_links").
+			Where("knowledge_base_id = ? AND page_type = ? AND status <> ? AND EXISTS ("+
+				"SELECT 1 FROM jsonb_array_elements_text(COALESCE(aliases, '[]'::jsonb)) a "+
+				"WHERE lower(regexp_replace(a, '\\s', '', 'g')) IN ?)",
+				kbID, pageType, types.WikiPageStatusArchived, chunk).
+			Order("slug ASC").
+			Limit(wikiNormalizedTitleLookupLimit(len(chunk))).
+			Scan(&rows).Error; err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			row := rows[i]
+			out = append(out, &row)
+		}
+	}
+	return out, nil
+}
+
 // ListAll retrieves all non-archived wiki pages in a knowledge base.
 func (r *wikiPageRepository) ListAll(ctx context.Context, kbID string) ([]*types.WikiPage, error) {
 	var pages []*types.WikiPage

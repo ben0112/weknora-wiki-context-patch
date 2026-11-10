@@ -2263,6 +2263,12 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			for _, alias := range add.Item.Aliases {
 				page.Aliases = appendUnique(page.Aliases, alias)
 			}
+			// Persist the extracted spelling as an alias when it differs from
+			// the page title, so a later re-spelling resolves back to this
+			// page via the alias fast path (upstream #4149 direction).
+			if add.Item.Name != "" && normalizeWikiIdentityTitle(add.Item.Name) != normalizeWikiIdentityTitle(page.Title) {
+				page.Aliases = appendUnique(page.Aliases, add.Item.Name)
+			}
 			page.SourceRefs = appendUnique(page.SourceRefs, add.SourceRef)
 
 			if page.Title == "" {

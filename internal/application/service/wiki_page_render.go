@@ -3,8 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
-	"sort"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -74,6 +75,7 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 	}
 
 	rendered := make([]wikiPageSection, 0, len(sections))
+	now := time.Now()
 	for _, sec := range sections {
 		h := strings.TrimSpace(sec.heading)
 		secClaims := byHeading[h]
@@ -104,7 +106,17 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 			rendered = append(rendered, sec) // unchanged this round
 			continue
 		}
-		var conflictLines strings.Builder
+
+		// Split current vs expired claims: expired ones move out of the main
+		// prose and are listed in a 已失效说明 subsection instead.
+		var claimsBlock, expiredLines, conflictLines strings.Builder
+		for _, c := range secClaims {
+			if c.ValidTo != nil && c.ValidTo.Before(now) {
+				fmt.Fprintf(&expiredLines, "- %s（失效于 %s）\n", c.ClaimText, c.ValidTo.Format("2006-01-02"))
+				continue
+			}
+			fmt.Fprintf(&claimsBlock, "- %s\n", c.ClaimText)
+		}
 		for _, c := range conflictByHeading[h] {
 			src := c.KnowledgeID
 			if len(src) > 8 {
@@ -112,10 +124,11 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 			}
 			fmt.Fprintf(&conflictLines, "- %s（来源：%s）\n", c.ClaimText, src)
 		}
-		sort.SliceStable(secClaims, func(i, j int) bool { return secClaims[i].ID < secClaims[j].ID })
-		var claimsBlock strings.Builder
-		for _, c := range secClaims {
-			fmt.Fprintf(&claimsBlock, "- %s\n", c.ClaimText)
+		if strings.TrimSpace(claimsBlock.String()) == "" && strings.TrimSpace(conflictLines.String()) == "" {
+			// Only expired claims: rewriting the section would empty it, so
+			// keep the current text and append nothing this round.
+			rendered = append(rendered, sec)
+			continue
 		}
 		out, err := s.generateWithTemplate(ctx, chatModel,
 			agent.WikiPageSectionRenderSystemPrompt+"\n\n"+agent.WikiPageSectionRenderUserPrompt,
@@ -126,6 +139,7 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 				"SectionHeading": h,
 				"Claims":         claimsBlock.String(),
 				"Conflicts":      conflictLines.String(),
+				"Expired":        expiredLines.String(),
 				"AvailableSlugs": in.availableSlugs,
 				"Language":       in.language,
 			})
@@ -143,9 +157,42 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 	}
 
 	merged := mergeWikiPageSections(preamble, rendered)
+	// Link discipline: a wiki link inside a heading line is never valid —
+	// strip the markup deterministically so the heading stays plain text.
+	merged = wikiStripHeadingLinks(merged)
 	origHeadings := wikiPageHeadings(in.existingBody)
 	if !wikiPageHeadingsPreserved(origHeadings, wikiPageHeadings(merged)) {
 		return "", fmt.Errorf("%w: claim projection would drop an original heading", ErrWikiContextOverflow)
 	}
 	return merged, nil
+}
+
+// wikiHeadingLineRE matches an ATX heading line.
+var wikiHeadingLineRE = regexp.MustCompile(`^#{1,6}[ \t]+.*$`)
+
+// wikiStripHeadingLinks removes [[...]] markup from heading lines, keeping
+// the display text (or the slug when there is no display text).
+func wikiStripHeadingLinks(content string) string {
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		if !wikiHeadingLineRE.MatchString(line) || !strings.Contains(line, "[[") {
+			continue
+		}
+		lines[i] = wikiLinkRE.ReplaceAllStringFunc(line, func(m string) string {
+			sub := wikiLinkRE.FindStringSubmatch(m)
+			if len(sub) == 3 && sub[2] != "" {
+				return sub[2]
+			}
+			if len(sub) >= 2 {
+				return sub[1]
+			}
+			return m
+		})
+		changed = true
+	}
+	if !changed {
+		return content
+	}
+	return strings.Join(lines, "\n")
 }

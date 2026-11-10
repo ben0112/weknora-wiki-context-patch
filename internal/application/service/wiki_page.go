@@ -1249,6 +1249,12 @@ func (s *wikiPageService) FindPagesByNormalizedTitles(ctx context.Context, kbID,
 	return s.repo.FindPagesByNormalizedTitles(ctx, kbID, pageType, identities)
 }
 
+// FindPagesByNormalizedAliases looks up pages whose aliases array contains one
+// of the normalized identities (alias fast path for extraction drift).
+func (s *wikiPageService) FindPagesByNormalizedAliases(ctx context.Context, kbID, pageType string, identities []string) ([]*types.WikiPageLite, error) {
+	return s.repo.FindPagesByNormalizedAliases(ctx, kbID, pageType, identities)
+}
+
 // ListDistinctCategoryPaths returns the existing wiki folder paths. Used by
 // wiki ingest's taxonomy planner to ground folder reuse.
 func (s *wikiPageService) ListDistinctCategoryPaths(ctx context.Context, kbID string, maxPaths int) ([][]string, error) {

@@ -503,11 +503,12 @@ const WikiPageSectionRenderSystemPrompt = `You are a wiki editor assembling ONE 
 
 ### RULES:
 1. You are a COMPILER, not a creative writer. Write the section from the provided claims; stay close to their wording and do not invent facts, transitions, or filler.
-2. Keep the section's heading EXACTLY as provided.
+2. Keep the section's heading EXACTLY as provided. Never place a [[...]] wiki link inside the heading line.
 3. Contradictory claims are supplied separately under <conflicting_claims>; do not include them in the section prose — add them to the "Contradictions / Updates" subsection instead.
-4. Keep a [[slug|name]] link only when its slug is present in the supplied valid-link list. Never invent a slug and never link a page to itself.
-5. Preserve any claims about this section's subject even when they are terse; do not drop a claim because it seems redundant.
-6. Write in the requested language.
+4. Expired claims are supplied under <expired_claims>; do not include them in the main prose — list them in a "已失效说明" subsection with their expiry dates.
+5. Keep a [[slug|name]] link only when its slug is present in the supplied valid-link list. Never invent a slug and never link a page to itself.
+6. Preserve any claims about this section's subject even when they are terse; do not drop a claim because it seems redundant.
+7. Write in the requested language.
 
 Output ONLY the updated section, starting with its heading line. Do not output a SUMMARY line.`
 
@@ -529,15 +530,21 @@ const WikiPageSectionRenderUserPrompt = `<page_metadata>
 </conflicting_claims>
 {{end}}
 
+{{if .Expired}}<expired_claims>
+{{.Expired}}
+</expired_claims>
+{{end}}
+
 <valid_wiki_links>
 {{.AvailableSlugs}}
 </valid_wiki_links>
 
 <instructions>
-1. The first line of your output MUST be exactly the <section_heading> above.
+1. The first line of your output MUST be exactly the <section_heading> above, with no wiki links inside it.
 2. Compose this section from the <claims>; do not import claims that clearly belong to a different section or subject.
 3. If <conflicting_claims> exist, append a "Contradictions / Updates" subsection listing them with their sources, without asserting which is true.
-4. Write in {{.Language}}.
+4. If <expired_claims> exist, append a "已失效说明" subsection listing them with their expiry dates; do not state them as currently valid.
+5. Write in {{.Language}}.
 </instructions>
 
 Output ONLY the updated section.`

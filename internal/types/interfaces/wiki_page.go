@@ -166,6 +166,10 @@ type WikiPageService interface {
 	// and lowercased; empty entries are ignored.
 	FindPagesByNormalizedTitles(ctx context.Context, kbID, pageType string, identities []string) ([]*types.WikiPageLite, error)
 
+	// FindPagesByNormalizedAliases returns non-archived pages of pageType
+	// that carry one of the normalized identities in their aliases array.
+	FindPagesByNormalizedAliases(ctx context.Context, kbID, pageType string, identities []string) ([]*types.WikiPageLite, error)
+
 	// ListDistinctCategoryPaths returns the existing wiki folder paths (split
 	// into segments), capped at maxPaths. Used by wiki ingest's taxonomy
 	// planner as the pool of folders to reuse.
@@ -348,6 +352,10 @@ type WikiPageRepository interface {
 	// FindPagesByNormalizedTitles is the batched form of
 	// FindPagesByNormalizedTitle.
 	FindPagesByNormalizedTitles(ctx context.Context, kbID, pageType string, identities []string) ([]*types.WikiPageLite, error)
+
+	// FindPagesByNormalizedAliases returns non-archived pages of pageType
+	// that carry one of the normalized identities in their aliases array.
+	FindPagesByNormalizedAliases(ctx context.Context, kbID, pageType string, identities []string) ([]*types.WikiPageLite, error)
 
 	// ListDistinctCategoryPaths returns the materialized paths of existing
 	// wiki folders (split into segments), capped at maxPaths. Used by the
