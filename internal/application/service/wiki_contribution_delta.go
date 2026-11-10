@@ -108,8 +108,15 @@ func (s *wikiIngestService) persistContributions(
 		return
 	}
 	byKnowledge := make(map[string][]*types.WikiPageContribution)
+	seen := make(map[string]struct{})
 	for _, add := range additions {
 		block, chunkIDs := wikiAdditionBlock(add, chunkContentByID)
+		hash := wikiAdditionHash(add, chunkContentByID)
+		key := add.KnowledgeID + "\x00" + hash
+		if _, dup := seen[key]; dup {
+			continue // identical evidence block for the same knowledge in this batch
+		}
+		seen[key] = struct{}{}
 		encoded, err := json.Marshal(chunkIDs)
 		if err != nil {
 			encoded = []byte("[]")
@@ -121,7 +128,7 @@ func (s *wikiIngestService) persistContributions(
 			KnowledgeID:     add.KnowledgeID,
 			ChunkIDs:        types.JSON(encoded),
 			Content:         block,
-			ContentHash:     wikiAdditionHash(add, chunkContentByID),
+			ContentHash:     hash,
 			Status:          types.WikiContributionActive,
 		})
 	}

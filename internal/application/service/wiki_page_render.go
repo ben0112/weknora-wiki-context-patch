@@ -153,7 +153,16 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 			rendered = append(rendered, sec)
 			continue
 		}
-		rendered = append(rendered, wikiPageSection{heading: sec.heading, body: strings.TrimSpace(strings.TrimPrefix(trimmed, h))})
+		body := strings.TrimSpace(strings.TrimPrefix(trimmed, h))
+		// Deterministic guarantees: the model may skip the auxiliary
+		// subsections, so append them verbatim when they are missing.
+		if cf := strings.TrimSpace(conflictLines.String()); cf != "" && !strings.Contains(body, "Contradictions") {
+			body += "\n\n### Contradictions / Updates\n" + cf
+		}
+		if ex := strings.TrimSpace(expiredLines.String()); ex != "" && !strings.Contains(body, "已失效说明") {
+			body += "\n\n### 已失效说明\n" + ex
+		}
+		rendered = append(rendered, wikiPageSection{heading: sec.heading, body: body})
 	}
 
 	merged := mergeWikiPageSections(preamble, rendered)
