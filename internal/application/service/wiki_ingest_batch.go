@@ -2430,6 +2430,8 @@ func (s *wikiIngestService) reduceSlugUpdates(
 				// the encoded context back to their real slugs BEFORE the
 				// content is parsed/stored, so out_links reflect real pages.
 				updatedContent = slugHandles.decodeContent(updatedContent)
+				// Link discipline: headings must never carry wiki-link markup.
+				updatedContent = wikiStripHeadingLinks(updatedContent)
 				updatedSummary, updatedBody := splitSummaryLine(updatedContent)
 				if updatedBody != "" {
 					page.Content = updatedBody

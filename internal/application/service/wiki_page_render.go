@@ -169,7 +169,9 @@ func (s *wikiIngestService) renderWikiPageFromClaimsScoped(
 	// Link discipline: a wiki link inside a heading line is never valid —
 	// strip the markup deterministically so the heading stays plain text.
 	merged = wikiStripHeadingLinks(merged)
-	origHeadings := wikiPageHeadings(in.existingBody)
+	// Compare against the existing page with the same normalization, so pages
+	// that already carried linked headings don't fail the preservation check.
+	origHeadings := wikiPageHeadings(wikiStripHeadingLinks(in.existingBody))
 	if !wikiPageHeadingsPreserved(origHeadings, wikiPageHeadings(merged)) {
 		return "", fmt.Errorf("%w: claim projection would drop an original heading", ErrWikiContextOverflow)
 	}
