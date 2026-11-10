@@ -1321,7 +1321,8 @@ func (r *wikiPageRepository) FindPagesByNormalizedAliases(
 			Model(&types.WikiPage{}).
 			Select("slug, title, page_type, status, aliases, out_links").
 			Where("knowledge_base_id = ? AND page_type = ? AND status <> ? AND EXISTS ("+
-				"SELECT 1 FROM jsonb_array_elements_text(COALESCE(aliases, '[]'::jsonb)) a "+
+				"SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(aliases) = 'array' "+
+				"THEN aliases ELSE '[]'::jsonb END) a "+
 				"WHERE lower(regexp_replace(a, '\\s', '', 'g')) IN ?)",
 				kbID, pageType, types.WikiPageStatusArchived, chunk).
 			Order("slug ASC").
